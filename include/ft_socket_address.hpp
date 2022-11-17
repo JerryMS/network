@@ -1,9 +1,8 @@
 #pragma once
 
 #include <string>
-#include <string_view>
-#include <netdb.h>
 #include <memory>
+#include <netdb.h>
 #include <arpa/inet.h>
 
 namespace FtTCP

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "ft_socket.hpp"
 #include <mutex>
 #include <queue>
+#include "ft_socket.hpp"
 
 namespace FtTCP
 {
