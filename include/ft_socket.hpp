@@ -16,11 +16,12 @@ namespace FtTCP
     static constexpr PlatformSocket INVALID_SOCKET = -1;
     static constexpr PlatformError SOCKET_ERROR = -1;
 
-    static constexpr int TCP_NODELAY = 0x0001;
+    static constexpr int TCP_NODELAY_US = 100;
 
     class Socket
     {
-    protected:
+    private:
+
         PlatformSocket m_socket;
         AddressPtr m_address;
         std::queue<PlatformError> m_errors;

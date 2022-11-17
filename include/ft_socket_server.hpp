@@ -76,6 +76,7 @@ namespace FtTCP
         static constexpr std::chrono::milliseconds ACCEPT_TIMEOUT{1000};
         static constexpr std::chrono::milliseconds NOWAIT{0};
         static constexpr std::size_t RECEIVE_BUFFER_SIZE{256};
+        
         std::thread m_listenerThread;
         std::mutex m_listenerMutex;
         std::mutex m_notifierMutex;
@@ -107,6 +108,7 @@ namespace FtTCP
 
         void SendToClient(ClientHandle clientHandle, const void * data, size_t size);
         void CloseClient(ClientHandle clientHandle);
+
         bool SetOnStartListeningCallback(OnStartListeningFnType onStartListening);
         bool SetOnClientConnectCallback(OnClientConnectFnType onConnect);
         bool SetOnClientDisconnectCallback(OnClientDisconnectFnType onDisconnect);

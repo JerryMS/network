@@ -1,8 +1,7 @@
 #include "include/ft_socket.hpp"
-#include <netdb.h>
-#include <iostream>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <netdb.h>
 #include <errno.h>
 #include <unistd.h>
 
@@ -12,7 +11,6 @@ namespace FtTCP
     Socket::Socket(AddressPtr address) : m_socket{INVALID_SOCKET},
                                          m_address(address)
     {
-        // Create the SOCKET
         if (!m_address)
         {
             return;
@@ -60,7 +58,7 @@ namespace FtTCP
         if (m_socket == INVALID_SOCKET)
             return true;
         fd_set socketSetErr, socketSetWr;
-        timeval tmval {0, 500}; // 0.5ms
+        timeval tmval {0, TCP_NODELAY_US}; 
 
         FD_ZERO(&socketSetErr); 
         FD_SET(m_socket, &socketSetErr);
@@ -94,10 +92,8 @@ namespace FtTCP
             return false;
         }
 
-        struct timeval to;
-        to.tv_sec = 0;
-        to.tv_usec = 1000;
-        PlatformError result = setsockopt(m_socket, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof(to));
+        struct timeval tmval {0, TCP_NODELAY_US};
+        PlatformError result = setsockopt(m_socket, SOL_SOCKET, SO_SNDTIMEO, &tmval, sizeof(tmval));
         if (SOCKET_ERROR == result)
         {
             PlatformError lastError = errno;
@@ -119,7 +115,7 @@ namespace FtTCP
     bool Socket::Bind()
     {        
         const sockaddr_in *addr = m_address->GetAddress();
-        // re uses address in case server socket
+        // reuse address in case server socket
         PlatformSocket option = 1;
         setsockopt(m_socket, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option));
         PlatformError result = bind(m_socket, (struct sockaddr *)addr, sizeof(struct sockaddr_in));
@@ -152,11 +148,11 @@ namespace FtTCP
 
     SocketPtr Socket::Accept(std::chrono::milliseconds timeout)
     {	    
-        struct timeval tv = { 0, std::chrono::duration_cast<std::chrono::microseconds>(timeout).count() };  
+        struct timeval tmval { 0, std::chrono::duration_cast<std::chrono::microseconds>(timeout).count() };  
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(m_socket, &rfds);
-        PlatformError selectresult = select(static_cast<int>(m_socket + 1), &rfds, (fd_set *) 0, (fd_set *) 0, &tv);
+        PlatformError selectresult = select(static_cast<int>(m_socket + 1), &rfds, (fd_set *) 0, (fd_set *) 0, &tmval);
         if (selectresult > 0)
         {
             PlatformSocket newSocket = INVALID_SOCKET;
@@ -172,15 +168,12 @@ namespace FtTCP
         fd_set socketSet;
         FD_ZERO(&socketSet);
         FD_SET(m_socket, &socketSet);
-        timeval tmval;
-        tmval.tv_sec = 0;
-        tmval.tv_usec = std::chrono::duration_cast<std::chrono::microseconds>(timeout).count();
+        timeval tmval {0, std::chrono::duration_cast<std::chrono::microseconds>(timeout).count()};
         PlatformError result = select(static_cast<int>(m_socket + 1), &socketSet, (fd_set *) 0, (fd_set *) 0, &tmval);
         if (result == SOCKET_ERROR)
         {
             PlatformError lastError = errno;
             m_errors.push(lastError);
-            std::cout << "Socket read ready error: " << lastError << std::endl;
             return false;
         }
         return (result == 1) ? true : false;
@@ -191,16 +184,13 @@ namespace FtTCP
         fd_set socketSet;
         FD_ZERO(&socketSet);
         FD_SET(m_socket, &socketSet);
-        timeval tmval;
-        tmval.tv_sec = 0;
-        tmval.tv_usec = std::chrono::duration_cast<std::chrono::microseconds>(timeout).count();
+        timeval tmval {0, std::chrono::duration_cast<std::chrono::microseconds>(timeout).count()};
         PlatformError result = select(static_cast<int>(m_socket + 1), (fd_set *) 0, &socketSet, (fd_set *) 0, &tmval);
 
         if (result == SOCKET_ERROR)
         {
             PlatformError lastError = errno;
             m_errors.push(lastError);
-            std::cout << "Socket write ready error: " << lastError << std::endl;
             return false;
         }
         return (result == 1) ? true : false;
@@ -213,7 +203,6 @@ namespace FtTCP
         {
             PlatformError lastError = errno;
             m_errors.push(lastError);
-            std::cout << "Socket receive error: " << lastError << std::endl;
             return 0;
         }            
         return static_cast<size_t>(received);
@@ -230,6 +219,8 @@ namespace FtTCP
         PlatformError lastError = errno;
         if (sent == SOCKET_ERROR || sent <= 0)
         {
+            PlatformError lastError = errno;
+            m_errors.push(lastError);
             return false;
         }
         *bytesSent += static_cast<size_t>(sent);
