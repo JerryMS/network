@@ -5,6 +5,7 @@
 #include <chrono>
 #include <mutex>
 #include <map>
+#include <queue>
 #include <functional>
 #include <condition_variable>
 #include "ft_socket.hpp"
@@ -17,8 +18,19 @@ namespace FtTCP
 
     using ServerPtr = std::shared_ptr<Server>;
 
-    using ClientHandle = unsigned long;
+    using ClientHandle = long unsigned int;
 
+    enum ServerReason
+    {
+        InitiallBindFail,
+        InitiallListenFail,
+        ConnectionAccepted,
+        ConnectionRefused,
+        ConnectionDeleted,
+        ServerStarted,
+        ServerStopSignal,
+        ServerStopped
+    };
     struct ServerParameters
     {
         unsigned short int port;
@@ -30,7 +42,7 @@ namespace FtTCP
     using OnClientConnectFnType = std::function<void(Server &, ClientHandle)>;
     using OnClientDisconnectFnType = std::function<void(Server &, ClientHandle)>;
     using OnClientReceiveDataFnType = std::function<void(Server &, ClientHandle, const void *, size_t)>;
-    using OnUpdateFnType = std::function<void(Server &)>;
+    using OnUpdateFnType = std::function<void(Server &, ServerReason, PlatformError)>;
 
     class Server
     {
@@ -53,7 +65,7 @@ namespace FtTCP
 			std::thread thread;
 			SocketPtr socket;
 			ClientHandle clientHandle;
-			bool connected;
+			std::atomic_bool connected;
 			SocketSendQueue forSend;
 		};
 
@@ -61,6 +73,8 @@ namespace FtTCP
 
         static constexpr std::chrono::milliseconds CLIENT_THROTTLE_TIME{5};
         static constexpr std::chrono::milliseconds LISTENER_THROTTLE_TIME{5};
+        static constexpr std::chrono::milliseconds ACCEPT_TIMEOUT{1000};
+        static constexpr std::chrono::milliseconds NOWAIT{0};
         static constexpr std::size_t RECEIVE_BUFFER_SIZE{256};
         std::thread m_listenerThread;
         std::mutex m_listenerMutex;
@@ -70,6 +84,7 @@ namespace FtTCP
         ServerParameters m_parameters;
         SocketPtr m_listenerSocket;
         std::map<ClientHandle, ClientPtr> m_clients;
+        mutable std::queue<ClientHandle> m_clientsForDelete;
         ClientHandle m_clientHandlesCounter{0};
 
         OnStartListeningFnType m_onStartListening = nullptr;
@@ -82,14 +97,16 @@ namespace FtTCP
         void RunClient(ClientPtr client);
         bool DoInitializing();
         bool DoListening();
+        void CleanupClients();
     public:
         Server(const ServerParameters &params);
         ~Server();
 
         void Start();
+        void Stop();
 
         void SendToClient(ClientHandle clientHandle, const void * data, size_t size);
-
+        void CloseClient(ClientHandle clientHandle);
         bool SetOnStartListeningCallback(OnStartListeningFnType onStartListening);
         bool SetOnClientConnectCallback(OnClientConnectFnType onConnect);
         bool SetOnClientDisconnectCallback(OnClientDisconnectFnType onDisconnect);

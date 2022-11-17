@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ft_socket.hpp"
-#include "ft_buffer.hpp"
 #include <mutex>
 #include <queue>
 

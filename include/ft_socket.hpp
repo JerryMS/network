@@ -1,7 +1,9 @@
 #pragma once
 
 #include "ft_socket_address.hpp"
+#include "ft_socket_buffer.hpp"
 #include <queue>
+#include <chrono>
 
 namespace FtTCP
 {
@@ -34,9 +36,9 @@ namespace FtTCP
         bool Connect();
         bool Bind();
         bool Listen();
-        bool IsReadyForRead();
-        bool IsReadyForWrite();
-        SocketPtr Accept();
+        bool IsReadyForRead(std::chrono::milliseconds timeout);
+        bool IsReadyForWrite(std::chrono::milliseconds timeout);
+        SocketPtr Accept(std::chrono::milliseconds timeout);
         size_t Receive(void * data, size_t bytes, uint32_t flags);
         bool Send(void * data, size_t bytes, uint32_t flags, size_t * bytesSent);
 

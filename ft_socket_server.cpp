@@ -1,5 +1,4 @@
 #include "include/ft_socket_server.hpp"
-#include "include/ft_buffer.hpp"
 
 namespace FtTCP
 {
@@ -11,20 +10,33 @@ namespace FtTCP
 
     Server::~Server()
     {
-        m_stage.store(Stage::Shutingdown);
-
-        if (m_listenerThread.joinable())
-            m_listenerThread.join();
+        Stop();
     }
 
     void Server::Start()
     {
+        m_stage = Server::Stage::Initializing;
         m_listenerThread = std::thread([this]()
                                        { this->Run(); });
 
         std::unique_lock<std::mutex> lock(m_listenerMutex);
-        m_listenerStageCond.wait_for(lock, std::chrono::milliseconds(1), [this]()
+        m_listenerStageCond.wait_for(lock, LISTENER_THROTTLE_TIME, [this]()
                                      { return m_stage != Stage::Listening; });
+    }
+
+    void Server::Stop()
+    {
+        if (m_onUpdate)
+        {
+            std::lock_guard<std::mutex> lock(m_notifierMutex);
+            m_onUpdate(*this, ServerReason::ServerStopSignal, 0);
+        }
+
+        m_stage.store(Stage::Shutingdown);
+
+        if (m_listenerThread.joinable())
+            m_listenerThread.join();
+
     }
 
     bool Server::DoInitializing()
@@ -38,7 +50,7 @@ namespace FtTCP
             if (m_onUpdate)
             {
                 std::lock_guard<std::mutex> lock(m_notifierMutex);
-                m_onUpdate(*this);
+                m_onUpdate(*this, ServerReason::InitiallBindFail, errno);
             }
             return false;
         }
@@ -48,7 +60,7 @@ namespace FtTCP
             if (m_onUpdate)
             {
                 std::lock_guard<std::mutex> lock(m_notifierMutex);
-                m_onUpdate(*this);
+                m_onUpdate(*this, ServerReason::InitiallListenFail, errno);
             }
             return false;
         }
@@ -59,20 +71,24 @@ namespace FtTCP
 
     bool Server::DoListening()
     {
-        if (m_listenerSocket->IsReadyForRead())
+        if (m_listenerSocket->IsReadyForRead(ACCEPT_TIMEOUT))
         {
-            if (m_clients.size() >= m_parameters.maxConnections)
-            {
-                return false;
-            }
-
-            SocketPtr connectionSocket = m_listenerSocket->Accept();
+            SocketPtr connectionSocket = m_listenerSocket->Accept(NOWAIT);
             if (connectionSocket && connectionSocket->IsInvalid() == false)
             {
                 auto client = std::allocate_shared<Client>(std::allocator<Client>(), *this);
                 client->clientHandle = ++m_clientHandlesCounter;
                 client->connected = true;
                 client->socket = connectionSocket;
+                if (m_clients.size() >= m_parameters.maxConnections)
+                {
+                    if (m_onUpdate)
+                    {
+                        std::lock_guard<std::mutex> lock(m_notifierMutex);
+                        m_onUpdate(*this, ServerReason::ConnectionRefused, 0);
+                    }
+                    return false;
+                }
 
                 client->thread = std::thread([this, client]()
                                              { this->RunClient(client); });
@@ -81,22 +97,46 @@ namespace FtTCP
                     m_clients[client->clientHandle] = client;
                 }
 
+                if (m_onUpdate)
+                {
+                    std::lock_guard<std::mutex> lock(m_notifierMutex);
+                    m_onUpdate(*this, ServerReason::ConnectionAccepted, 0);
+                }
+
                 if (m_onConnect)
                 {
                     std::lock_guard<std::mutex> lock(m_notifierMutex);
                     m_onConnect(*this, client->clientHandle);
                 }
 
-                if (m_onUpdate)
-                {
-                    std::lock_guard<std::mutex> lock(m_notifierMutex);
-                    m_onUpdate(*this);
-                }
-
                 return true;
             }
         }
         return false;
+    }
+
+    void Server::CleanupClients()
+    {
+            bool ClientsDeleted = false;
+            std::lock_guard<std::mutex> lock(m_listenerMutex);
+            while (!m_clientsForDelete.empty())
+            {
+                ClientHandle cl = m_clientsForDelete.front();
+                auto clIter = m_clients.find(cl);
+                if (clIter != m_clients.end())
+                {
+                    if (clIter->second->thread.joinable())
+                        clIter->second->thread.join();
+                    m_clients.erase(clIter);
+                    ClientsDeleted = true;
+                }
+                m_clientsForDelete.pop();
+            }
+            if (ClientsDeleted && m_onUpdate)
+            {
+                std::lock_guard<std::mutex> lock(m_notifierMutex);
+                m_onUpdate(*this, ServerReason::ConnectionDeleted, 0);
+            }
     }
 
     void Server::Run()
@@ -106,7 +146,7 @@ namespace FtTCP
         if (m_onUpdate)
         {
             std::lock_guard<std::mutex> lock(m_notifierMutex);
-            m_onUpdate(*this);
+            m_onUpdate(*this, ServerReason::ServerStarted, 0);
         }
 
         Stage stage;
@@ -123,6 +163,7 @@ namespace FtTCP
             case Stage::Listening:
                 if (!DoListening())
                 {
+                    CleanupClients();
                     std::this_thread::sleep_for(LISTENER_THROTTLE_TIME);
                     continue;
                 }
@@ -132,12 +173,18 @@ namespace FtTCP
                 break;
             }
         }
-
-        std::lock_guard<std::mutex> lock(m_listenerMutex);
+            
         for (auto &client : m_clients)
             client.second->thread.join();
 
         m_clients.clear();
+
+        if (m_onUpdate)
+        {
+            std::lock_guard<std::mutex> lock(m_notifierMutex);
+            m_onUpdate(*this, ServerReason::ServerStopped, 0);
+        }
+        m_listenerSocket = nullptr;
     }
 
     void Server::RunClient(ClientPtr client)
@@ -156,12 +203,7 @@ namespace FtTCP
                 break;
             }
 
-            if (client->socket->IsInvalid())
-            {
-                break;
-            }
-
-            if (client->socket->IsReadyForWrite())
+            if (client->socket->IsReadyForWrite(NOWAIT))
             {
                 if (!client->forSend.IsEmpty())
                 {
@@ -177,7 +219,12 @@ namespace FtTCP
                 }
             }
 
-            if (client->socket->IsReadyForRead())
+            if (client->socket->IsInvalid())
+            {
+                break;
+            }
+
+            if (client->socket->IsReadyForRead(CLIENT_THROTTLE_TIME))
             {
 
                 size_t bytesReceived = client->socket->Receive(receiveBuffer->Get(), RECEIVE_BUFFER_SIZE, 0);
@@ -193,6 +240,10 @@ namespace FtTCP
 
                     timeoutTime = std::chrono::system_clock::now() + client->server.m_parameters.clientTimeOut;
                 }
+                else
+                {
+                    break;
+                }
             }
         }
 
@@ -201,7 +252,10 @@ namespace FtTCP
             std::lock_guard<std::mutex> lock(m_notifierMutex);
             m_onDisconnect(*this, client->clientHandle);
         }
+
+        std::lock_guard<std::mutex> lock(m_listenerMutex);
         client->socket = nullptr;
+        client->server.m_clientsForDelete.push(client->clientHandle);
     }
 
     void Server::SendToClient(ClientHandle clientHandle, const void *data, size_t size)
@@ -210,6 +264,14 @@ namespace FtTCP
         if (m_clients.find(clientHandle) == m_clients.end())
             return;
         m_clients[clientHandle]->forSend.Push(data, size);
+    }
+
+    void Server::CloseClient(ClientHandle clientHandle)
+    {
+        std::lock_guard<std::mutex> lock(m_listenerMutex);
+        if (m_clients.find(clientHandle) == m_clients.end())
+            return;
+        m_clients[clientHandle]->connected = false;
     }
 
     bool Server::SetOnStartListeningCallback(OnStartListeningFnType onStartListening)
