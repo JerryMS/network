@@ -9,7 +9,7 @@
 #include <functional>
 #include <condition_variable>
 #include "ft_socket.hpp"
-#include "ft_queues.hpp"
+#include "ft_socket_queues.hpp"
 
 namespace FtTCP
 {
