@@ -26,6 +26,69 @@ static char stop_msg[] = "Server stopped.\n";
 static char shutdown_cmd[] = "shutdown";
 static char shutdown_msg[] = "Server shuting down.\n";
 
+static char testout_cmd[] = "test out";
+static char testout[] =  
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n"
+    "Big text\n";
+
 static std::atomic_bool stopping{false};
 static std::atomic_bool shutingdown{false};
 
@@ -77,10 +140,22 @@ void OnClientReceiveData(Server &server, ClientHandle clientHandle, const void *
         stopping = true;
         shutingdown = true;
     }
+    else if (0 == memcmp(data, testout_cmd, std::min(size, strlen(shutdown_cmd))))
+    {
+        server.SendToClient(clientHandle, testout, strlen(testout));
+    }
     else
     {
         server.SendToClient(clientHandle, prompt, strlen(prompt));
     }
+}
+
+static std::string m_passwd = "123";
+
+bool PasswordEntered(Server &server, ClientHandle clientHandle, const void *data, size_t size)
+{
+    auto mm = std::minmax(m_passwd.length(), size);
+    return (0 == std::memcmp(data, m_passwd.c_str(), mm.first));
 }
 
 void OnUpdate(Server &server, ServerReason reason, PlatformError err)
@@ -131,6 +206,7 @@ int main(int argc, char *argv[])
     server.SetOnClientDisconnectCallback(&OnClientDisconnect);
     server.SetOnReceiveDataCallback(&OnClientReceiveData);
     server.SetOnServerUpdate(&OnUpdate);
+    server.SetOnPasswordEntered(&PasswordEntered);
 
     while (!shutingdown)
     {

@@ -9,12 +9,12 @@ namespace FtTCP
         if (m_queue.empty())
             return true;
 
-        BufferPtr buffer = m_queue.front();
+        Buffer& buffer = m_queue.front();
         size_t bytesSent = 0;
-        if (!socket->Send(buffer->Get() + m_sent, buffer->Count() - m_sent, 0, &bytesSent))
+        if (!socket->Send(&buffer[m_sent], buffer.size() - m_sent, 0, &bytesSent))
             return false;
         m_sent += bytesSent;
-        if (m_sent == buffer->Count())
+        if (m_sent == buffer.size())
         {
             m_queue.pop_front();
             m_sent = 0;
@@ -33,9 +33,8 @@ namespace FtTCP
         while (remainder)
         {
             size_t bytesToWrite = std::min(remainder, MAX_SEND_BUFFER);
-            BufferPtr buffer = Buffer::CreateBuffer(bytesToWrite);
-            buffer->Push(pointer, bytesToWrite);
-            m_queue.push_back(buffer);
+            Buffer buff(pointer, pointer + bytesToWrite);
+            m_queue.push_back(std::move(buff));
             pointer += bytesToWrite;
             remainder -= bytesToWrite;
         }

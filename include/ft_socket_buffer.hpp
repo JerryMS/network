@@ -3,6 +3,7 @@
 #include <memory>
 #include <cstring>
 
+#if 0
 namespace FtTCP
 {
     class Buffer;
@@ -54,3 +55,5 @@ namespace FtTCP
         }
     };
 }
+
+#endif
