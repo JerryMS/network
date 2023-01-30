@@ -5,165 +5,14 @@
 #include <cstring>
 #include <list>
 #include <atomic>
-#include "include/ft_socket_address.hpp"
-#include "include/ft_socket.hpp"
-#include "include/ft_socket_server.hpp"
+#include "ft-socket/ft_socket_address.hpp"
+#include "ft-socket/ft_socket.hpp"
+#include "ft-socket/ft_socket_server.hpp"
+#include "telnet_callbacks.hpp"
 
 using namespace FtTCP;
 
 static char datatosend[] = "\n Ok!\n\0";
-static char responce[] = "Ok\n";
-static char prompt[] = "user@system:$ ";
-
-static char bye[] = "shutting down\n";
-
-static char close_cmd[] = "close";
-static char close_msg[] = "Connection closed.\n";
-
-static char stop_cmd[] = "stop";
-static char stop_msg[] = "Server stopped.\n";
-
-static char shutdown_cmd[] = "shutdown";
-static char shutdown_msg[] = "Server shuting down.\n";
-
-static char testout_cmd[] = "test out";
-static char testout[] =  
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n"
-    "Big text\n";
-
-static std::atomic_bool stopping{false};
-static std::atomic_bool shutingdown{false};
-
-static std::string reason_names[] = {
-    "InitiallBindFail",
-    "InitiallListenFail",
-    "ConnectionAccepted",
-    "ConnectionRejected",
-    "ConnectionDeleted",
-    "ServerStarted",
-    "ServerStopSignal",
-    "ServerStopped"};
-
-void OnStartListening(Server &server)
-{
-    std::cout << "Listener started" << std::endl;
-}
-
-void OnClientConnect(Server &server, ClientHandle clientHandle)
-{
-    std::cout << "Client connected: " << clientHandle << std::endl;
-    server.SendToClient(clientHandle, prompt, strlen(prompt));
-}
-
-void OnClientDisconnect(Server &server, ClientHandle clientHandle)
-{
-    std::cout << "Client diconnected: " << clientHandle << std::endl;
-}
-
-void OnClientReceiveData(Server &server, ClientHandle clientHandle, const void *data, size_t size)
-{
-    char *strdata = (char *)data;
-    strdata[size] = 0;
-    std::cout << "Client: " << clientHandle << " received: " << strdata << std::endl;
-    server.SendToClient(clientHandle, responce, strlen(responce));
-    if (0 == memcmp(data, close_cmd, std::min(size, strlen(close_cmd))))
-    {
-        server.SendToClient(clientHandle, close_msg, strlen(close_msg));
-        server.CloseClient(clientHandle);
-    }
-    else if (0 == memcmp(data, stop_cmd, std::min(size, strlen(stop_cmd))))
-    {
-        server.SendToClient(clientHandle, stop_msg, strlen(stop_msg));
-        stopping = true;
-    }
-    else if (0 == memcmp(data, shutdown_cmd, std::min(size, strlen(shutdown_cmd))))
-    {   
-        server.SendToClient(clientHandle, shutdown_msg, strlen(shutdown_msg));
-        stopping = true;
-        shutingdown = true;
-    }
-    else if (0 == memcmp(data, testout_cmd, std::min(size, strlen(shutdown_cmd))))
-    {
-        server.SendToClient(clientHandle, testout, strlen(testout));
-    }
-    else
-    {
-        server.SendToClient(clientHandle, prompt, strlen(prompt));
-    }
-}
-
-static std::string m_passwd = "123";
-
-bool PasswordEntered(Server &server, ClientHandle clientHandle, const void *data, size_t size)
-{
-    auto mm = std::minmax(m_passwd.length(), size);
-    return (0 == std::memcmp(data, m_passwd.c_str(), mm.first));
-}
-
-void OnUpdate(Server &server, ServerReason reason, PlatformError err)
-{
-    std::cout << "Server updated: " << reason_names[reason] << " error: " << strerror(err) << std::endl;
-    if (98 == err) // connection already used
-        stopping = true;
-}
 
 void TestClientSocket()
 {
@@ -199,24 +48,25 @@ int main(int argc, char *argv[])
         std::cout << "address == " << a->toString() << " valid=" << a->IsValid() << std::endl;
     }
 
+    TelnetCallbacks callbacks;
     ServerParameters params{10303, 2, std::chrono::seconds(60)};
     Server server(params);
-    server.SetOnStartListeningCallback(&OnStartListening);
-    server.SetOnClientConnectCallback(&OnClientConnect);
-    server.SetOnClientDisconnectCallback(&OnClientDisconnect);
-    server.SetOnReceiveDataCallback(&OnClientReceiveData);
-    server.SetOnServerUpdate(&OnUpdate);
-    server.SetOnPasswordEntered(&PasswordEntered);
+    server.SetOnStartListeningCallback(&callbacks, &TelnetCallbacks::OnStartListening);
+    server.SetOnClientConnectCallback(&callbacks, &TelnetCallbacks::OnClientConnect);
+    server.SetOnClientDisconnectCallback(&callbacks, &TelnetCallbacks::OnClientDisconnect);
+    server.SetOnReceiveDataCallback(&callbacks, &TelnetCallbacks::OnClientReceiveData);
+    server.SetOnServerUpdate(&callbacks, &TelnetCallbacks::OnUpdate);
+    server.SetOnPasswordEntered(&callbacks, &TelnetCallbacks::OnClientPasswordEntered);
 
-    while (!shutingdown)
+    while (!callbacks.m_shutingdown)
     {
         server.Start();
-        while (!stopping)
+        while (!callbacks.m_stopping)
         {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
         server.Stop();
-        stopping = false;
+        callbacks.m_stopping = false;
     }
     return 0;
 }

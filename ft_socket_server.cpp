@@ -1,4 +1,6 @@
-#include "include/ft_socket_server.hpp"
+#include "ft-socket/ft_socket_server.hpp"
+
+#include "esp_log.h"
 
 namespace FtTCP {
 Server::Server(const ServerParameters& params)
@@ -16,24 +18,29 @@ void Server::Start()
 {
   m_stage = Server::Stage::Initializing;
   m_listenerThread = std::thread([this]() { this->Run(); });
-
-  std::unique_lock<std::mutex> lock(m_listenerMutex);
-  m_listenerStageCond.wait_for(lock, LISTENER_THROTTLE_TIME, [this]() {
-    return m_stage != Stage::Listening;
-  });
 }
 
 void Server::Stop()
 {
-  if (m_onUpdate) {
+  {
+    // mutex prevent change event function on calling
     std::lock_guard<std::mutex> lock(m_notifierMutex);
-    m_onUpdate(*this, ServerReason::ServerStopSignal, 0);
+    if (m_onUpdate) {
+      m_onUpdate(*this, ServerReason::ServerStopSignal, 0);
+    }
   }
 
   m_stage.store(Stage::Shutingdown);
 
   if (m_listenerThread.joinable())
     m_listenerThread.join();
+}
+
+void Server::SetPrompt(const char* prompt)
+{
+  m_commandPrompt = "\033[0;32m";
+  m_commandPrompt += prompt;
+  m_commandPrompt += "\033[0m ";
 }
 
 bool Server::DoInitializing()
@@ -43,16 +50,18 @@ bool Server::DoInitializing()
   m_listenerSocket->SetNonBlocking(true);
   if (m_listenerSocket->Bind() == false) {
     m_stage = Stage::Shutingdown;
+    // mutex prevent change event function on calling
+    std::lock_guard<std::mutex> lock(m_notifierMutex);
     if (m_onUpdate) {
-      std::lock_guard<std::mutex> lock(m_notifierMutex);
       m_onUpdate(*this, ServerReason::InitiallBindFail, errno);
     }
     return false;
   }
   if (m_listenerSocket->Listen() == false) {
     m_stage = Stage::Shutingdown;
+    // mutex prevent change event function on calling
+    std::lock_guard<std::mutex> lock(m_notifierMutex);
     if (m_onUpdate) {
-      std::lock_guard<std::mutex> lock(m_notifierMutex);
       m_onUpdate(*this, ServerReason::InitiallListenFail, errno);
     }
     return false;
@@ -64,36 +73,35 @@ bool Server::DoInitializing()
 
 bool Server::DoListening()
 {
-  if (m_listenerSocket->IsReadyForRead(ACCEPT_TIMEOUT)) {
-    SocketPtr connectionSocket = m_listenerSocket->Accept(NOWAIT);
-    if (connectionSocket && connectionSocket->IsInvalid() == false) {
-      auto client =
-        std::allocate_shared<Client>(std::allocator<Client>(), *this);
-      client->clientHandle = ++m_clientHandlesCounter;
-      client->connected = true;
-      client->socket = connectionSocket;
+  SocketPtr connectionSocket = m_listenerSocket->Accept(ACCEPT_TIMEOUT);
+  if (connectionSocket && connectionSocket->IsInvalid() == false) {
+    auto client = std::make_shared<Client>(
+      *this, ++m_clientHandlesCounter, true, connectionSocket);
+    {
+      std::lock_guard<std::mutex> lock_listener(m_listenerMutex);
       if (m_clients.size() >= m_parameters.maxConnections) {
+        // mutex prevent change event function on calling
+        std::lock_guard<std::mutex> lock(m_notifierMutex);
         if (m_onUpdate) {
-          std::lock_guard<std::mutex> lock(m_notifierMutex);
           m_onUpdate(*this, ServerReason::ConnectionRefused, 0);
         }
         return false;
       }
-
-      client->thread =
-        std::thread([this, client]() { this->RunClient(client); });
-      {
-        std::lock_guard<std::mutex> lock(m_listenerMutex);
-        m_clients[client->clientHandle] = client;
-      }
-
-      if (m_onUpdate) {
-        std::lock_guard<std::mutex> lock(m_notifierMutex);
-        m_onUpdate(*this, ServerReason::ConnectionAccepted, 0);
-      }
-
-      return true;
     }
+
+    client->thread = std::thread([this, client]() { this->RunClient(client); });
+    {
+      std::lock_guard<std::mutex> lock(m_listenerMutex);
+      m_clients[client->clientHandle] = client;
+    }
+
+    // mutex prevent change event function on calling
+    std::lock_guard<std::mutex> lock(m_notifierMutex);
+    if (m_onUpdate) {
+      m_onUpdate(*this, ServerReason::ConnectionAccepted, 0);
+    }
+
+    return true;
   }
   return false;
 }
@@ -101,38 +109,47 @@ bool Server::DoListening()
 void Server::CleanupClients()
 {
   bool ClientsDeleted = false;
-  std::lock_guard<std::mutex> lock(m_listenerMutex);
-  while (!m_clientsForDelete.empty()) {
-    ClientHandle cl = m_clientsForDelete.front();
-    auto clIter = m_clients.find(cl);
-    if (clIter != m_clients.end()) {
-      if (clIter->second->thread.joinable())
-        clIter->second->thread.join();
-      m_clients.erase(clIter);
-      ClientsDeleted = true;
+  {
+    std::lock_guard<std::mutex> lock(m_listenerMutex);
+    while (!m_clientsForDelete.empty()) {
+      ClientHandle cl = m_clientsForDelete.front();
+      auto clIter = m_clients.find(cl);
+      if (clIter != m_clients.end()) {
+        if (clIter->second->thread.joinable())
+          clIter->second->thread.join();
+        m_clients.erase(clIter);
+        ClientsDeleted = true;
+      }
+      m_clientsForDelete.pop();
     }
-    m_clientsForDelete.pop();
   }
-  if (ClientsDeleted && m_onUpdate) {
+  {
+    // mutex prevent change event function on calling
     std::lock_guard<std::mutex> lock(m_notifierMutex);
-    m_onUpdate(*this, ServerReason::ConnectionDeleted, 0);
+    if (ClientsDeleted && m_onUpdate) {
+      m_onUpdate(*this, ServerReason::ConnectionDeleted, 0);
+    }
   }
 }
 
 void Server::Run()
 {
-  m_listenerStageCond.notify_one();
-
-  if (m_onUpdate) {
+  {
+    // mutex prevent change event function on calling
     std::lock_guard<std::mutex> lock(m_notifierMutex);
-    m_onUpdate(*this, ServerReason::ServerStarted, 0);
+    if (m_onUpdate) {
+      m_onUpdate(*this, ServerReason::ServerStarted, 0);
+    }
   }
+  ESP_LOGI(TAG, "Started");
 
   Stage stage;
   while (Stage::Shutingdown != (stage = m_stage.load())) {
     switch (stage) {
     case Stage::Initializing:
+      ESP_LOGI(TAG, "Initializing");
       if (!DoInitializing()) {
+        ESP_LOGW(TAG, "Initializing failed");
         continue;
       }
       break;
@@ -147,39 +164,44 @@ void Server::Run()
     }
   }
 
-  for (auto& client : m_clients)
-    client.second->thread.join();
+  ESP_LOGI(TAG, "Stopping");
 
-  m_clients.clear();
+  {
+    std::lock_guard<std::mutex> lock(m_listenerMutex);
+    for (auto& client : m_clients)
+      client.second->thread.join();
 
-  if (m_onUpdate) {
+    m_clients.clear();
+  }
+
+  {
+    // mutex prevent change event function on calling
     std::lock_guard<std::mutex> lock(m_notifierMutex);
-    m_onUpdate(*this, ServerReason::ServerStopped, 0);
+    if (m_onUpdate) {
+      m_onUpdate(*this, ServerReason::ServerStopped, 0);
+    }
   }
   m_listenerSocket = nullptr;
+  ESP_LOGI(TAG, "Stopped");
 }
 
 bool Server::ProcessClientPassword(const ClientHandle clientHandle,
                                    const void* data, const size_t size)
 {
-  if (nullptr == m_onPasswordEntered) {
-    SendToClient(clientHandle, WRONG_PASSWORD_MESSAGE.data(),
-                 WRONG_PASSWORD_MESSAGE.length());
-    SendToClient(clientHandle, PASSWORD_PROMPT.data(),
-                 PASSWORD_PROMPT.length());
-    return false;
-  }
-
+  // mutex prevent change event function on calling
   std::lock_guard<std::mutex> lock(m_notifierMutex);
-  if (!m_onPasswordEntered(*this, clientHandle, data, size)) {
-    SendToClient(clientHandle, WRONG_PASSWORD_MESSAGE.data(),
-                 WRONG_PASSWORD_MESSAGE.length());
-    SendToClient(clientHandle, PASSWORD_PROMPT.data(),
-                 PASSWORD_PROMPT.length());
+  if (nullptr == m_onPasswordEntered) {
+    SendToClient(clientHandle, WRONG_PASSWORD_MESSAGE);
+    SendToClient(clientHandle, PASSWORD_PROMPT);
     return false;
   }
 
-  SendToClient(clientHandle, m_commandPrompt.c_str(), m_commandPrompt.length());
+  if (!m_onPasswordEntered(*this, clientHandle, data, size)) {
+    SendToClient(clientHandle, WRONG_PASSWORD_MESSAGE);
+    SendToClient(clientHandle, PASSWORD_PROMPT);
+    return false;
+  }
+
   return true;
 }
 
@@ -191,13 +213,11 @@ void Server::RunClient(ClientPtr client)
     std::chrono::system_clock::now() +
     client->server.m_parameters.clientTimeOut;
 
-  Buffer receiveBuffer;
-  receiveBuffer.resize(RECEIVE_BUFFER_SIZE);
+  Buffer receiveBuffer(RECEIVE_BUFFER_SIZE);
 
   std::this_thread::sleep_for(CLIENT_THROTTLE_TIME);
 
-  SendToClient(client->clientHandle, PASSWORD_PROMPT.data(),
-               PASSWORD_PROMPT.length());
+  SendToClient(client->clientHandle, PASSWORD_PROMPT);
 
   while (client->connected && Stage::Shutingdown != m_stage.load()) {
     std::this_thread::sleep_for(CLIENT_THROTTLE_TIME);
@@ -208,13 +228,13 @@ void Server::RunClient(ClientPtr client)
     }
 
     if (client->socket->IsReadyForWrite(NOWAIT)) {
-      if (!client->forSend.IsEmpty()) {
+      while (!client->forSend.IsEmpty()) {
         if (!client->forSend.Send(client->socket)) {
           client->connected = false;
           break;
         }
-
-        std::this_thread::sleep_for(CLIENT_THROTTLE_TIME);
+        if (!client->connected)
+          break;
 
         timeoutTime = std::chrono::system_clock::now() +
                       client->server.m_parameters.clientTimeOut;
@@ -233,21 +253,22 @@ void Server::RunClient(ClientPtr client)
           if (ProcessClientPassword(
                 client->clientHandle, receiveBuffer.data(), bytesReceived)) {
             awaitPassword = false;
+            // mutex prevent change event function on calling
+            std::lock_guard<std::mutex> lock(m_notifierMutex);
             if (m_onConnect) {
-              std::lock_guard<std::mutex> lock(m_notifierMutex);
               m_onConnect(*this, client->clientHandle);
             }
           }
           continue;
         }
-        if (m_onReceiveData) {
+        {
+          // mutex prevent change event function on calling
           std::lock_guard<std::mutex> lock(m_notifierMutex);
-          m_onReceiveData(*this, client->clientHandle, receiveBuffer.data(),
-                          bytesReceived);
+          if (m_onReceiveData) {
+            m_onReceiveData(*this, client->clientHandle, receiveBuffer.data(),
+                            bytesReceived);
+          }
         }
-
-        std::this_thread::sleep_for(CLIENT_THROTTLE_TIME);
-
         timeoutTime = std::chrono::system_clock::now() +
                       client->server.m_parameters.clientTimeOut;
       }
@@ -256,24 +277,33 @@ void Server::RunClient(ClientPtr client)
       }
     }
   }
-
-  if (m_onDisconnect) {
+  {
+    // mutex prevent change event function on calling
     std::lock_guard<std::mutex> lock(m_notifierMutex);
-    m_onDisconnect(*this, client->clientHandle);
+    if (m_onDisconnect) {
+      m_onDisconnect(*this, client->clientHandle);
+    }
   }
-
   std::lock_guard<std::mutex> lock(m_listenerMutex);
   client->socket = nullptr;
   client->server.m_clientsForDelete.push(client->clientHandle);
 }
 
-void Server::SendToClient(ClientHandle clientHandle, const void* data,
-                          size_t size)
+void Server::SendToClient(ClientHandle clientHandle, const std::string_view& msg)
 {
   std::lock_guard<std::mutex> lock(m_listenerMutex);
   if (m_clients.find(clientHandle) == m_clients.end())
     return;
-  m_clients[clientHandle]->forSend.Push(data, size);
+  m_clients[clientHandle]->forSend.Push(msg.data(), msg.length());
+}
+
+void Server::ShowPrompt(ClientHandle clientHandle)
+{
+  std::lock_guard<std::mutex> lock(m_listenerMutex);
+  if (m_clients.find(clientHandle) == m_clients.end())
+    return;
+  m_clients[clientHandle]->forSend.Push(
+    m_commandPrompt.c_str(), m_commandPrompt.length());
 }
 
 void Server::CloseClient(ClientHandle clientHandle)
@@ -284,53 +314,10 @@ void Server::CloseClient(ClientHandle clientHandle)
   m_clients[clientHandle]->connected = false;
 }
 
-bool Server::SetOnStartListeningCallback(
-  OnStartListeningFnType onStartListening)
+ServerPtr Server::CreateServer(unsigned short int port,
+                               unsigned short int maxConnection)
 {
-  if (Stage::Initializing != m_stage)
-    return false;
-  m_onStartListening = onStartListening;
-  return true;
-}
-
-bool Server::SetOnClientConnectCallback(OnClientConnectFnType onConnect)
-{
-  if (Stage::Initializing != m_stage)
-    return false;
-  m_onConnect = onConnect;
-  return true;
-}
-
-bool Server::SetOnClientDisconnectCallback(
-  OnClientDisconnectFnType onDisconnect)
-{
-  if (Stage::Initializing != m_stage)
-    return false;
-  m_onDisconnect = onDisconnect;
-  return true;
-}
-
-bool Server::SetOnReceiveDataCallback(OnClientReceiveDataFnType onReceiveData)
-{
-  if (Stage::Initializing != m_stage)
-    return false;
-  m_onReceiveData = onReceiveData;
-  return true;
-}
-
-bool Server::SetOnServerUpdate(OnUpdateFnType onUpdate)
-{
-  if (Stage::Initializing != m_stage)
-    return false;
-  m_onUpdate = onUpdate;
-  return true;
-}
-
-bool Server::SetOnPasswordEntered(OnPasswordEntered onPasswordEntered)
-{
-  if (Stage::Initializing != m_stage)
-    return false;
-  m_onPasswordEntered = onPasswordEntered;
-  return true;
+  ServerParameters parameters{port, maxConnection, std::chrono::seconds(600)};
+  return std::make_shared<Server>(parameters);
 }
 } // namespace FtTCP
