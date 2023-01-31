@@ -4,15 +4,35 @@
 
 namespace FtTCP {
 
-Address::Address(const char* host, const int port)
-  : m_host{host}, m_port{port}, m_isListener{false}, m_isAsync{false}
+Address::Address(const char* host, const int port, IPProto proto)
+  : m_host{host}, m_port{port}, m_proto{proto}, m_isListener{false}, m_isAsync{false}
 {
+  switch (proto)
+  {
+  case IPProto::eUDP:
+    m_sockType = SOCK_DGRAM;
+    break;
+  case IPProto::eTCP:
+  default:
+    m_sockType = SOCK_STREAM;
+    break;
+  }
   FillPresentation();
 }
 
-Address::Address(const int port, const bool async)
-  : m_host{""}, m_port{port}, m_isListener{true}, m_isAsync(async)
+Address::Address(const int port, const bool async, IPProto proto)
+  : m_host{""}, m_port{port}, m_proto{proto}, m_isListener{true}, m_isAsync(async)
 {
+  switch (proto)
+  {
+  case IPProto::eUDP:
+    m_sockType = SOCK_DGRAM;
+    break;
+  case IPProto::eTCP:
+  default:
+    m_sockType = SOCK_STREAM;
+    break;
+  }
   FillPresentation();
 }
 
@@ -33,14 +53,16 @@ void Address::FillPresentation()
     addrinfo hints;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET; // IPv4
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_socktype = m_sockType;
+    hints.ai_protocol = m_proto;
     int res = getaddrinfo(
       m_host.c_str(), std::to_string(m_port).c_str(), &hints, &address);
     if (0 == res) {
+      
       m_address = *(reinterpret_cast<sockaddr_in*>(address->ai_addr));
+      m_address.sin_family = AF_INET;
+      m_address.sin_port = htons(m_port);
       m_isValid = true;
-
       if (m_isValid) {
         inet_ntop(m_address.sin_family, &m_address.sin_addr, ipstr,
                   INET_ADDRSTRLEN);
@@ -60,8 +82,8 @@ void Address::FillPresentation()
   }
 
   if (m_isValid) {
-    std::snprintf(buf, MAX_BUFFER_LENGTH - 1, "%s:%d ip=%s", m_host.c_str(),
-                  m_port, ipstr);
+    std::snprintf(buf, MAX_BUFFER_LENGTH - 1, "%s:%d ip=%s proto=%s, family=%d", m_host.c_str(),
+                  m_port, ipstr, (IPProto::eTCP == m_proto) ? "TCP" : "UDP",  m_sockType);
   }
   else {
     std::snprintf(buf, MAX_BUFFER_LENGTH - 1, "%s:%d ip=not resolved",
@@ -95,6 +117,16 @@ const sockaddr_in* Address::GetAddress() const
   return &m_address;
 }
 
+IPProto Address::GetProto() const
+{
+  return m_proto;
+}
+
+int Address::GetSocketType() const
+{
+  return m_sockType;
+}
+
 AddressPtr Address::CreateClientAddress(const char* host, const int port)
 {
   return std::make_shared<Address>(host, port);
@@ -103,6 +135,17 @@ AddressPtr Address::CreateClientAddress(const char* host, const int port)
 AddressPtr Address::CreateListenerAddress(const int port, const bool isAsync)
 {
   return std::make_shared<Address>(port, isAsync);
+}
+
+AddressPtr Address::CreateBroadcastAddress(const char* self_ip, const int port)
+{
+  char masked[INET_ADDRSTRLEN];
+  in_addr_t addr;
+  inet_pton(AF_INET, self_ip, &(addr));
+  //addr &= 0x00FEFFFF;
+  addr &= 0xFFFFFFFF;
+  inet_ntop(AF_INET, &addr, masked, INET_ADDRSTRLEN);
+  return std::make_shared<Address>(masked, port, FtTCP::eUDP);  
 }
 
 } // namespace FtTCP

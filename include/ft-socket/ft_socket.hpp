@@ -27,6 +27,7 @@ private:
 public:
   Socket(AddressPtr address);
   Socket(AddressPtr address, PlatformSocket sock);
+  Socket(AddressPtr address, IPProto proto);
   ~Socket();
 
   bool IsInvalid() const;
@@ -41,6 +42,7 @@ public:
   SocketPtr Accept(std::chrono::milliseconds timeout);
   size_t Receive(void* data, size_t bytes, uint32_t flags);
   bool Send(void* data, size_t bytes, uint32_t flags, size_t* bytesSent);
+  bool SendDatagram(const void* data, size_t bytes);
 
   static SocketPtr CreateSocket(AddressPtr address);
   static SocketPtr CreateSocket(AddressPtr address, PlatformSocket sock);

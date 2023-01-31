@@ -20,7 +20,7 @@ Socket::Socket(AddressPtr address)
     return;
   }
   const sockaddr_in* addr = m_address->GetAddress();
-  m_socket = socket(addr->sin_family, SOCK_STREAM, IPPROTO_TCP);
+  m_socket = socket(addr->sin_family, m_address->GetSocketType(), m_address->GetProto());
 }
 
 Socket::Socket(AddressPtr address, PlatformSocket sock)
@@ -230,6 +230,22 @@ bool Socket::Send(void* data, size_t bytes, uint32_t flags, size_t* bytesSent)
   }
   *bytesSent += static_cast<size_t>(sent);
   return true;
+}
+
+bool Socket::SendDatagram(const void* data, size_t bytes)
+{
+  if (nullptr == data || IPProto::eUDP != m_address->GetProto()) {
+    return false;
+  }
+  const sockaddr_in* addr = m_address->GetAddress();
+  int sended = sendto(m_socket, data, bytes, MSG_NOSIGNAL, (struct sockaddr*)addr, sizeof(sockaddr_in));
+  bool res = (sended > -1);
+  if (!res)
+  {
+    PlatformError lastError = errno;
+    m_errors.push(lastError);
+  }
+  return res;
 }
 
 SocketPtr Socket::CreateSocket(AddressPtr address)
